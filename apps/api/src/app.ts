@@ -1,17 +1,10 @@
 import express from "express";
+import healthRoutes from "./routes/health.routes.js";
 
 const app = express();
 
-// Parse JSON request body
 app.use(express.json());
 
-// Health Check Route
-app.get("/health", (req, res) => {
-  res.status(200).json({
-    success: true,
-    service: "Nimbus API",
-    message: "API is running successfully 🚀",
-  });
-});
+app.use("/health", healthRoutes);
 
 export default app;
