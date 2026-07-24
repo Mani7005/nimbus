@@ -1,12 +1,41 @@
-import { exec } from "child_process";
-import { promisify } from "util";
+import { spawn } from "child_process";
 
-export const executeCommand = (
+export function executeCommand(
   command: string,
+  input = "",
   timeout = 15000
-) => {
-  return promisify(exec)(command, {
-    timeout,
-    maxBuffer: 1024 * 1024,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      shell: true,
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    child.on("error", reject);
+
+    child.on("close", () => {
+      resolve({
+        stdout,
+        stderr,
+      });
+    });
+
+    child.stdin.write(input);
+    child.stdin.end();
+
+    setTimeout(() => {
+      child.kill();
+      reject(new Error("Execution Timed Out"));
+    }, timeout);
   });
-};
+}

@@ -11,12 +11,13 @@ export const execute = async (
   req: AuthRequest,
   res: Response
 ) => {
-  const { language, code } = req.body;
+  const { language, code, input } = req.body;
 
   const execution = await createExecution(
     req.userId!,
     language,
-    code
+    code,
+    input ??""
   );
 
   res.status(201).json({

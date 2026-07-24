@@ -12,21 +12,26 @@ export const register = async (
   try {
     const { email, password } = registerSchema.parse(req.body);
 
-    const user = await registerUser(email, password);
+   const user = await registerUser(email, password);
 
-    res.status(201).json({
-      success: true,
-      data: {
-        id: user.id,
-        email: user.email,
-      },
-    });
+   const token = generateToken(user.id);
+
+   res.status(201).json({
+   success: true,
+   token,
+   user: {
+    id: user.id,
+    email: user.email,
+  },
+});
   } catch (error: any) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
-  }
+  console.error("REGISTER ERROR:", error);
+
+  res.status(400).json({
+    success: false,
+    message: error.message,
+  });
+}
 };
 
 export const login = async (

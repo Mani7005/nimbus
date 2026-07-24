@@ -24,6 +24,8 @@ model Execution {
 
   code        String
 
+  input       String?
+
   output      String?
 
   status      String   @default("PENDING")

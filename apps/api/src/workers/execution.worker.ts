@@ -31,13 +31,27 @@ const worker = new Worker(
       throw new Error("Execution not found");
     }
 
+    console.log("=================================");
+    console.log("📄 Execution Details");
+    console.log("Language:", execution.language);
+    console.log("Input:", JSON.stringify(execution.input));
+    console.log("Code:");
+    console.log(execution.code);
+    console.log("=================================");
+
     let status = "COMPLETED";
     let output = "";
 
     switch (execution.language) {
       case "cpp": {
-        const result = await executeCpp(execution.code);
+        console.log("🚀 Calling executeCpp...");
 
+        const result = await executeCpp(
+          execution.code,
+          execution.input || ""
+        );
+
+        console.log("📤 executeCpp Result:");
         console.log(result);
 
         output = result.stderr || result.stdout;
@@ -59,7 +73,6 @@ const worker = new Worker(
       }
     }
 
-    // Update database ONCE
     await prisma.execution.update({
       where: {
         id: executionId,

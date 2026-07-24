@@ -4,13 +4,15 @@ import { executionQueue } from "../queues/execution.queue.js";
 export const createExecution = async (
   userId: string,
   language: string,
-  code: string
+  code: string,
+  input: string
 ) => {
 
   const execution = await prisma.execution.create({
   data: {
     language,
     code,
+    input,
     userId,
     status: "PENDING",
   },

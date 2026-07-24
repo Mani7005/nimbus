@@ -1,45 +1,38 @@
 import { useState } from "react";
+import AuthCard from "../components/AuthCard";
+import { login } from "../services/auth";
+import { saveToken } from "../utils/storage";
 
 interface LoginProps {
-  onLogin: (email: string, password: string) => void;
+  onLogin: () => void;
+  goToRegister: () => void;
 }
 
-function Login({ onLogin }: LoginProps) {
+function Login({ onLogin, goToRegister }: LoginProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleLogin() {
+    try {
+      setLoading(true);
+      const data = await login(email, password);
+      saveToken(data.token);
+      onLogin();
+    } catch {
+      alert("Invalid Email or Password");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
-    <div className="min-h-screen flex justify-center items-center bg-zinc-950">
-      <div className="bg-zinc-900 p-8 rounded-xl w-96">
-
-        <h1 className="text-3xl text-white font-bold mb-6">
-          Nimbus Login
-        </h1>
-
-        <input
-          className="w-full mb-4 p-3 rounded bg-zinc-800 text-white"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
-
-        <input
-          type="password"
-          className="w-full mb-6 p-3 rounded bg-zinc-800 text-white"
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-
-        <button
-          onClick={() => onLogin(email, password)}
-          className="w-full bg-blue-600 hover:bg-blue-700 p-3 rounded text-white"
-        >
-          Login
-        </button>
-
-      </div>
-    </div>
+    <AuthCard subtitle="Secure Online IDE">
+      <input className="w-full p-3 mb-4 rounded bg-zinc-800 text-white" placeholder="Email" value={email} onChange={(event) => setEmail(event.target.value)} />
+      <input type="password" className="w-full p-3 mb-6 rounded bg-zinc-800 text-white" placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} />
+      <button onClick={handleLogin} className="w-full bg-blue-600 hover:bg-blue-700 p-3 rounded text-white">{loading ? "Signing In..." : "Login"}</button>
+      <p className="text-zinc-400 mt-5 text-center">Don't have an account? <button onClick={goToRegister} className="text-blue-400">Register</button></p>
+    </AuthCard>
   );
 }
 
