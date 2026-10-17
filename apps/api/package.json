@@ -6,7 +6,10 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "worker": "tsx src/workers/execution.worker.ts"
+    "worker": "tsx src/workers/execution.worker.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "tsx --test test/unit/*.test.ts",
+    "test:integration": "tsx --test test/integration/*.test.ts"
   },
   "dependencies": {
     "@prisma/client": "6.16.2",

@@ -1,100 +1,44 @@
 import { Worker } from "bullmq";
-import connection from "../lib/redis.js";
-import prisma from "../lib/prisma.js";
 import { executeCpp } from "../adapters/cpp.adapter.js";
+import prisma from "../lib/prisma.js";
+import connection from "../lib/redis.js";
+import { formatExecutionOutput, toExecutionStatus, type ExecutionStatus } from "../runtime/execution-result.js";
 
-const worker = new Worker(
+interface ExecutionJobData {
+  executionId: string;
+}
+
+const worker = new Worker<ExecutionJobData>(
   "execution-queue",
   async (job) => {
     const { executionId } = job.data;
+    console.log("Processing execution:", executionId);
 
-    console.log("📦 Processing:", executionId);
+    await prisma.execution.update({ where: { id: executionId }, data: { status: "RUNNING" } });
+    const execution = await prisma.execution.findUnique({ where: { id: executionId } });
+    if (!execution) throw new Error("Execution not found");
 
-    // Mark execution as RUNNING
-    await prisma.execution.update({
-      where: {
-        id: executionId,
-      },
-      data: {
-        status: "RUNNING",
-      },
-    });
-
-    // Fetch execution
-    const execution = await prisma.execution.findUnique({
-      where: {
-        id: executionId,
-      },
-    });
-
-    if (!execution) {
-      throw new Error("Execution not found");
-    }
-
-    console.log("=================================");
-    console.log("📄 Execution Details");
-    console.log("Language:", execution.language);
-    console.log("Input:", JSON.stringify(execution.input));
-    console.log("Code:");
-    console.log(execution.code);
-    console.log("=================================");
-
-    let status = "COMPLETED";
+    let status: ExecutionStatus = "COMPLETED";
     let output = "";
 
-    switch (execution.language) {
-      case "cpp": {
-        console.log("🚀 Calling executeCpp...");
-
-        const result = await executeCpp(
-          execution.code,
-          execution.input || ""
-        );
-
-        console.log("📤 executeCpp Result:");
-        console.log(result);
-
-        output = result.stderr || result.stdout;
-
-        if (result.stderr) {
-          if (result.stderr.includes("Timed Out")) {
-            status = "TIMEOUT";
-          } else {
-            status = "FAILED";
-          }
-        }
-
-        break;
-      }
-
-      default: {
-        status = "FAILED";
-        output = "Language not supported";
-      }
+    if (execution.language === "cpp") {
+      const result = await executeCpp(execution.code, execution.input || "");
+      status = toExecutionStatus(result.outcome);
+      output = formatExecutionOutput(result);
+      if (result.outcome === "INFRASTRUCTURE_ERROR") console.error(`Infrastructure error for ${executionId}: ${result.message}`);
+    } else {
+      status = "FAILED";
+      output = "Language not supported";
     }
 
-    await prisma.execution.update({
-      where: {
-        id: executionId,
-      },
-      data: {
-        status,
-        output,
-      },
-    });
-
-    console.log(`✅ ${status}: ${executionId}`);
+    await prisma.execution.update({ where: { id: executionId }, data: { status, output } });
+    console.log(`${status}: ${executionId}`);
   },
-  {
-    connection,
-  }
+  { connection },
 );
 
-worker.on("completed", (job) => {
-  console.log(`🎉 Job ${job.id} completed`);
-});
-
-worker.on("failed", (job, err) => {
-  console.error(`❌ Job ${job?.id} failed`);
-  console.error(err);
+worker.on("completed", (job) => console.log(`Job ${job.id} completed`));
+worker.on("failed", (job, error) => {
+  console.error(`Job ${job?.id} failed`);
+  console.error(error);
 });

@@ -12,4 +12,10 @@ export const env = {
   JWT_SECRET: process.env.JWT_SECRET || "",
 
   NODE_ENV: process.env.NODE_ENV || "development",
+
+  EXECUTION_COMPILE_TIMEOUT_MS: Number(process.env.EXECUTION_COMPILE_TIMEOUT_MS) || 30000,
+
+  EXECUTION_RUN_TIMEOUT_MS: Number(process.env.EXECUTION_RUN_TIMEOUT_MS) || 10000,
+
+  EXECUTION_MAX_OUTPUT_BYTES: Number(process.env.EXECUTION_MAX_OUTPUT_BYTES) || 64 * 1024,
 };
