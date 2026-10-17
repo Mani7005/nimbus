@@ -35,4 +35,7 @@ model Execution {
   userId      String
 
   user        User @relation(fields: [userId], references: [id])
+
+  // Per-user lookups: the unfinished-execution cap (userId + status), history and ownership checks (userId prefix).
+  @@index([userId, status])
 }

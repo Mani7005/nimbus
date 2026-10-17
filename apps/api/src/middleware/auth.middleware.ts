@@ -6,34 +6,41 @@ export interface AuthRequest extends Request {
   userId?: string;
 }
 
-export const authenticate = (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-) => {
-  try {
-    const authHeader = req.headers.authorization;
+// "Bearer" (case-insensitive scheme, RFC 7235), one space, then a compact JWT: three base64url segments.
+const BEARER_TOKEN = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i;
 
-    if (!authHeader) {
-      return res.status(401).json({
-        success: false,
-        message: "Token missing",
-      });
-    }
+function sendUnauthorized(res: Response, message: string): void {
+  res.status(401).json({ success: false, message });
+}
 
-    const token = authHeader.split(" ")[1];
-
-    const decoded = jwt.verify(token, env.JWT_SECRET) as {
-      userId: string;
-    };
-
-    req.userId = decoded.userId;
-
-    next();
-  } catch (error) {
-    return res.status(401).json({
-      success: false,
-      message: "Invalid token",
-    });
+export const authenticate = (req: AuthRequest, res: Response, next: NextFunction): void => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    sendUnauthorized(res, "Token missing");
+    return;
   }
+
+  const match = BEARER_TOKEN.exec(authHeader);
+  if (!match) {
+    sendUnauthorized(res, "Invalid token");
+    return;
+  }
+
+  let payload: string | jwt.JwtPayload;
+  try {
+    // Pinned to the algorithm generateToken signs with.
+    payload = jwt.verify(match[1], env.JWT_SECRET, { algorithms: ["HS256"] });
+  } catch {
+    sendUnauthorized(res, "Invalid token");
+    return;
+  }
+
+  const userId = typeof payload === "object" ? payload.userId : undefined;
+  if (typeof userId !== "string" || userId === "") {
+    sendUnauthorized(res, "Invalid token");
+    return;
+  }
+
+  req.userId = userId;
+  next();
 };

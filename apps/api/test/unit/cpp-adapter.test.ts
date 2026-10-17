@@ -3,8 +3,17 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { COMPILE_COMMAND, RUN_COMMAND, describeExitCode, executeCpp, type CppExecutionLimits } from "../../src/adapters/cpp.adapter.js";
-import { buildDockerRunArgs, type ContainerRunResult, type RunContainerOptions } from "../../src/runtime/docker.js";
+import {
+  COMPILE_COMMAND,
+  DEFAULT_CPP_SANDBOXES,
+  RUN_COMMAND,
+  describeExitCode,
+  executeCpp,
+  type CppExecutionLimits,
+  type CppSandboxes,
+} from "../../src/adapters/cpp.adapter.js";
+import { sandboxConfig } from "../../src/config/sandbox.js";
+import { DEFAULT_SANDBOX, buildDockerRunArgs, type ContainerRunResult, type RunContainerOptions } from "../../src/runtime/docker.js";
 import { formatExecutionOutput, toExecutionStatus } from "../../src/runtime/execution-result.js";
 import { runResult } from "./fakes.js";
 
@@ -41,6 +50,7 @@ describe("executeCpp", () => {
     assert.deepEqual(calls.map((call) => call.command), [COMPILE_COMMAND, RUN_COMMAND]);
     assert.deepEqual(calls.map((call) => call.terminateOnOutputLimit), [false, true]);
     assert.deepEqual(calls.map((call) => call.timeoutMs), [LIMITS.compileTimeoutMs, LIMITS.runTimeoutMs]);
+    assert.deepEqual(calls.map((call) => call.readOnlyWorkspace ?? false), [false, true], "only g++ may write to the workspace");
     assert.notEqual(calls[0].containerName, calls[1].containerName);
     assert.match(calls[0].containerName, /^nimbus-compile-[0-9a-f-]{36}$/);
     assert.match(calls[1].containerName, /^nimbus-run-[0-9a-f-]{36}$/);
@@ -50,6 +60,40 @@ describe("executeCpp", () => {
       assert.ok(!args.some((arg) => arg.includes("whoami") || arg.includes("reboot")), "submitted text must not appear in docker arguments");
       assert.ok(path.relative(call.workspaceDir, call.cidFile).startsWith(".."), "cid file must live outside the mounted workspace");
     }
+  });
+
+  it("uses the compile and run sandboxes for their stages", async () => {
+    const sandboxes: CppSandboxes = {
+      compile: { ...DEFAULT_SANDBOX, memoryMb: 512 },
+      run: { ...DEFAULT_SANDBOX, memoryMb: 64 },
+    };
+    const { runner, calls } = scriptedRunner(runResult(), runResult());
+    await executeCpp("", "", { runner, limits: LIMITS, sandboxes });
+    assert.deepEqual(calls.map((call) => call.sandbox?.memoryMb), [512, 64]);
+  });
+
+  it("configures default sandboxes from validated settings, never as root", () => {
+    for (const sandbox of [DEFAULT_CPP_SANDBOXES.compile, DEFAULT_CPP_SANDBOXES.run]) {
+      assert.equal(sandbox.user, "65534:65534");
+      assert.equal(sandbox.pidsLimit, sandboxConfig.pidsLimit);
+      assert.equal(sandbox.maxFileSizeBytes, sandboxConfig.maxFileSizeBytes);
+    }
+    assert.equal(DEFAULT_CPP_SANDBOXES.compile.memoryMb, sandboxConfig.compileMemoryMb);
+    assert.equal(DEFAULT_CPP_SANDBOXES.run.memoryMb, sandboxConfig.runMemoryMb);
+  });
+
+  it("makes the workspace usable by the unprivileged container user", { skip: process.platform === "win32" && "POSIX modes only" }, async () => {
+    const modes: number[] = [];
+    await executeCpp("", "", {
+      limits: LIMITS,
+      runner: async (options) => {
+        modes.push((await fs.stat(options.workspaceDir)).mode & 0o777);
+        modes.push((await fs.stat(path.join(options.workspaceDir, "main.cpp"))).mode & 0o777);
+        modes.push((await fs.stat(path.dirname(options.workspaceDir))).mode & 0o777);
+        return runResult({ exitCode: 1 });
+      },
+    });
+    assert.deepEqual(modes, [0o777, 0o644, 0o700]);
   });
 
   it("removes the temporary directory afterwards", async () => {
@@ -186,5 +230,6 @@ describe("describeExitCode", () => {
     assert.equal(describeExitCode(1), "Process exited with code 1");
     assert.equal(describeExitCode(139), "Process exited with code 139: segmentation fault (SIGSEGV)");
     assert.match(describeExitCode(137), /SIGKILL.*memory limit/);
+    assert.equal(describeExitCode(153), "Process exited with code 153: file size limit exceeded (SIGXFSZ)");
   });
 });

@@ -5,11 +5,33 @@ export type SpawnFn = (command: string, args: readonly string[], options: SpawnO
 
 export interface SandboxOptions {
   image: string;
-  memory: string;
   cpus: string;
+  /** Memory limit; swap is given the same value, so the container cannot use swap beyond it. */
+  memoryMb: number;
+  pidsLimit: number;
+  /** RLIMIT_FSIZE: the largest file any process in the container may write. */
+  maxFileSizeBytes: number;
+  /** Size of /tmp, the only writable path besides a writable workspace. */
+  tmpfsMb: number;
+  /** Unprivileged uid:gid; 65534 is `nobody` in the Debian-based gcc image. */
+  user: string;
 }
 
-export const DEFAULT_SANDBOX: SandboxOptions = { image: "gcc:14", memory: "128m", cpus: "1" };
+export const DEFAULT_SANDBOX: SandboxOptions = {
+  image: "gcc:14",
+  cpus: "1",
+  memoryMb: 256,
+  pidsLimit: 64,
+  maxFileSizeBytes: 32 * 1024 * 1024,
+  tmpfsMb: 64,
+  user: "65534:65534",
+};
+
+/**
+ * The in-container `timeout` fires this long after the host-side timeout. The host timeout normally ends the run;
+ * this backstop kills the program even if the worker process dies and never removes the container.
+ */
+export const HARD_TIMEOUT_GRACE_MS = 2000;
 
 export interface DockerRunSpec {
   containerName: string;
@@ -17,11 +39,13 @@ export interface DockerRunSpec {
   cidFile: string;
   workspaceDir: string;
   command: readonly string[];
+  timeoutMs: number;
+  /** Mounts the workspace read-only, leaving the size-limited /tmp as the only writable path. */
+  readOnlyWorkspace?: boolean;
   sandbox?: SandboxOptions;
 }
 
 export interface RunContainerOptions extends DockerRunSpec {
-  timeoutMs: number;
   /** Per-stream cap; bytes beyond it are discarded while the stream keeps draining. */
   maxOutputBytes: number;
   terminateOnOutputLimit: boolean;
@@ -47,6 +71,8 @@ export interface RunnerDeps {
   spawn: SpawnFn;
   removeContainer: (containerName: string) => Promise<void>;
   readContainerId: (cidFile: string) => Promise<string>;
+  /** Monotonic clock in milliseconds; defaults to performance.now. */
+  now?: () => number;
 }
 
 const DEFAULT_KILL_GRACE_MS = 5000;
@@ -54,19 +80,39 @@ const REMOVE_TIMEOUT_MS = 10000;
 
 const spawnProcess: SpawnFn = (command, args, options) => nodeSpawn(command, args, options);
 
-export function buildDockerRunArgs({ containerName, cidFile, workspaceDir, command, sandbox = DEFAULT_SANDBOX }: DockerRunSpec): string[] {
+export function buildDockerRunArgs({
+  containerName,
+  cidFile,
+  workspaceDir,
+  command,
+  timeoutMs,
+  readOnlyWorkspace = false,
+  sandbox = DEFAULT_SANDBOX,
+}: DockerRunSpec): string[] {
   return [
     "run",
     "--rm",
+    // docker-init as PID 1 reaps processes and reports a signal-killed child as 128 + signal.
+    "--init",
     "--name", containerName,
     "--cidfile", cidFile,
     "--pull=never",
     "--network=none",
-    `--memory=${sandbox.memory}`,
+    "--user", sandbox.user,
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    "--read-only",
+    "--tmpfs", `/tmp:rw,noexec,nosuid,nodev,size=${sandbox.tmpfsMb}m`,
+    `--pids-limit=${sandbox.pidsLimit}`,
+    `--memory=${sandbox.memoryMb}m`,
+    `--memory-swap=${sandbox.memoryMb}m`,
     `--cpus=${sandbox.cpus}`,
-    "-v", `${workspaceDir}:/workspace`,
+    "--ulimit", `fsize=${sandbox.maxFileSizeBytes}`,
+    "-v", `${workspaceDir}:/workspace${readOnlyWorkspace ? ":ro" : ""}`,
     "-w", "/workspace",
     sandbox.image,
+    // Kills the whole process group, so programs that fork are killed too.
+    "timeout", "--signal=KILL", `${(timeoutMs + HARD_TIMEOUT_GRACE_MS) / 1000}s`,
     ...command,
   ];
 }
@@ -145,6 +191,8 @@ class CappedBuffer {
  */
 export function runContainer(options: RunContainerOptions, deps: RunnerDeps = defaultRunnerDeps): Promise<ContainerRunResult> {
   const { containerName, cidFile, timeoutMs, maxOutputBytes, terminateOnOutputLimit, killGraceMs = DEFAULT_KILL_GRACE_MS } = options;
+  const now = deps.now ?? (() => performance.now());
+  const startedAt = now();
 
   return new Promise((resolve) => {
     const stdout = new CappedBuffer(maxOutputBytes);
@@ -165,6 +213,9 @@ export function runContainer(options: RunContainerOptions, deps: RunnerDeps = de
         await removal;
         await deps.removeContainer(containerName);
       }
+
+      // The run reached the deadline but ended (e.g. by the in-container timeout) before the host timer ran.
+      if (!terminationReason && !spawnError && now() - startedAt >= timeoutMs) terminationReason = "timeout";
 
       resolve({
         exitCode,

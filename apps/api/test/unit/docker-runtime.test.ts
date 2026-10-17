@@ -3,7 +3,15 @@ import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
-import { buildDockerRunArgs, removeContainer, runContainer, type RunContainerOptions } from "../../src/runtime/docker.js";
+import {
+  DEFAULT_SANDBOX,
+  HARD_TIMEOUT_GRACE_MS,
+  buildDockerRunArgs,
+  removeContainer,
+  runContainer,
+  type RunContainerOptions,
+  type SandboxOptions,
+} from "../../src/runtime/docker.js";
 import { createFakeDocker } from "./fakes.js";
 
 const WORKSPACE = "C:\\Users\\Some User\\AppData\\Local\\Temp\\nimbus-x\\workspace";
@@ -27,17 +35,54 @@ describe("buildDockerRunArgs", () => {
     assert.deepEqual(buildDockerRunArgs(options()), [
       "run",
       "--rm",
+      "--init",
       "--name", "nimbus-run-test",
       "--cidfile", "C:\\tmp\\nimbus-x\\run.cid",
       "--pull=never",
       "--network=none",
-      "--memory=128m",
+      "--user", "65534:65534",
+      "--cap-drop=ALL",
+      "--security-opt=no-new-privileges",
+      "--read-only",
+      "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m",
+      "--pids-limit=64",
+      "--memory=256m",
+      "--memory-swap=256m",
       "--cpus=1",
+      "--ulimit", `fsize=${32 * 1024 * 1024}`,
       "-v", `${WORKSPACE}:/workspace`,
       "-w", "/workspace",
       "gcc:14",
+      "timeout", "--signal=KILL", "3s",
       "bash", "-c", "./main < input.txt",
     ]);
+  });
+
+  it("mounts the workspace read-only when requested", () => {
+    const args = buildDockerRunArgs(options({ readOnlyWorkspace: true }));
+    assert.ok(args.includes(`${WORKSPACE}:/workspace:ro`));
+  });
+
+  it("applies the configured sandbox limits and keeps swap equal to memory", () => {
+    const sandbox: SandboxOptions = { ...DEFAULT_SANDBOX, memoryMb: 512, pidsLimit: 32, maxFileSizeBytes: 1024 };
+    const args = buildDockerRunArgs(options({ sandbox }));
+    assert.ok(args.includes("--memory=512m"));
+    assert.ok(args.includes("--memory-swap=512m"));
+    assert.ok(args.includes("--pids-limit=32"));
+    assert.equal(args[args.indexOf("--ulimit") + 1], "fsize=1024");
+  });
+
+  it("starts the in-container hard timeout the grace period after the host timeout", () => {
+    const args = buildDockerRunArgs(options({ timeoutMs: 10500 }));
+    const timeoutAt = args.indexOf("timeout");
+    assert.deepEqual(args.slice(timeoutAt, timeoutAt + 4), ["timeout", "--signal=KILL", `${(10500 + HARD_TIMEOUT_GRACE_MS) / 1000}s`, "bash"]);
+    assert.equal(args[timeoutAt - 1], "gcc:14", "the timeout wraps the command, not docker options");
+  });
+
+  it("never runs the container as root or with extra privileges", () => {
+    const args = buildDockerRunArgs(options());
+    assert.notEqual(args[args.indexOf("--user") + 1].split(":")[0], "0");
+    assert.ok(!args.some((arg) => arg.startsWith("--privileged") || arg.startsWith("--cap-add")));
   });
 
   it("keeps paths with spaces as single arguments and contains no shell line continuations", () => {
@@ -112,6 +157,26 @@ describe("runContainer", () => {
 
     assert.equal(result.terminationReason, null);
     assert.deepEqual(fake.removed, []);
+  });
+
+  it("treats a run that ends at the deadline before the host timer fires as a timeout", async () => {
+    // The in-container timeout killed the program (exit 137) while the host timer was delayed.
+    const fake = createFakeDocker({ onSpawn: (child) => child.close(137) });
+    let clock = 0;
+    fake.deps.now = () => (clock += 1000);
+    const result = await runContainer(options({ timeoutMs: 1000 }), fake.deps);
+
+    assert.equal(result.terminationReason, "timeout");
+    assert.equal(result.exitCode, 137);
+    assert.deepEqual(fake.removed, [], "the container already exited, so there is nothing to remove");
+  });
+
+  it("does not treat a run that ends before the deadline as a timeout", async () => {
+    const fake = createFakeDocker({ onSpawn: (child) => child.close(137) });
+    let clock = 0;
+    fake.deps.now = () => (clock += 400);
+    const result = await runContainer(options({ timeoutMs: 1000 }), fake.deps);
+    assert.equal(result.terminationReason, null);
   });
 
   it("caps output while streaming and terminates when the limit is exceeded", async () => {

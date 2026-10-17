@@ -1,44 +1,58 @@
 import { Worker } from "bullmq";
 import { executeCpp } from "../adapters/cpp.adapter.js";
+import { env } from "../config/env.js";
+import { containerCleanupConfig } from "../config/sandbox.js";
 import prisma from "../lib/prisma.js";
 import connection from "../lib/redis.js";
-import { formatExecutionOutput, toExecutionStatus, type ExecutionStatus } from "../runtime/execution-result.js";
+import type { ExecutionJobData } from "../queues/execution.job.js";
+import { executionQueue } from "../queues/execution.queue.js";
+import { cleanupLeakedContainers, createDockerCleanupCli } from "../runtime/container-cleanup.js";
+import { getErrorMessage } from "../utils/errors.js";
+import { handleFailedExecutionJob, processExecutionJob, type ExecutionJobDeps } from "./execution.processor.js";
+import { reconcileOrphanedExecutions } from "./execution.reconciler.js";
+import { startPeriodicTask } from "./periodic-task.js";
+import { exitOnShutdownSignal, runShutdownSteps } from "../lib/shutdown.js";
 
-interface ExecutionJobData {
-  executionId: string;
-}
+const deps: ExecutionJobDeps = { executions: prisma.execution, executeCpp: (code, input) => executeCpp(code, input) };
 
-const worker = new Worker<ExecutionJobData>(
-  "execution-queue",
-  async (job) => {
-    const { executionId } = job.data;
-    console.log("Processing execution:", executionId);
-
-    await prisma.execution.update({ where: { id: executionId }, data: { status: "RUNNING" } });
-    const execution = await prisma.execution.findUnique({ where: { id: executionId } });
-    if (!execution) throw new Error("Execution not found");
-
-    let status: ExecutionStatus = "COMPLETED";
-    let output = "";
-
-    if (execution.language === "cpp") {
-      const result = await executeCpp(execution.code, execution.input || "");
-      status = toExecutionStatus(result.outcome);
-      output = formatExecutionOutput(result);
-      if (result.outcome === "INFRASTRUCTURE_ERROR") console.error(`Infrastructure error for ${executionId}: ${result.message}`);
-    } else {
-      status = "FAILED";
-      output = "Language not supported";
-    }
-
-    await prisma.execution.update({ where: { id: executionId }, data: { status, output } });
-    console.log(`${status}: ${executionId}`);
-  },
-  { connection },
-);
+const worker = new Worker<ExecutionJobData>("execution-queue", (job) => processExecutionJob(job, deps), {
+  connection,
+  concurrency: env.WORKER_CONCURRENCY,
+});
+console.log(`Execution worker started (concurrency ${env.WORKER_CONCURRENCY})`);
 
 worker.on("completed", (job) => console.log(`Job ${job.id} completed`));
-worker.on("failed", (job, error) => {
-  console.error(`Job ${job?.id} failed`);
-  console.error(error);
+worker.on("failed", (job, error) => void handleFailedExecutionJob(job, error, deps));
+worker.on("error", (error) => console.error(`Worker error: ${getErrorMessage(error)}`));
+
+// Removes execution containers leaked by a previous worker that died mid-run. Logs its result; never rejects.
+void cleanupLeakedContainers({ docker: createDockerCleanupCli(), ...containerCleanupConfig });
+
+const reconciler = startPeriodicTask(
+  "Execution reconciliation",
+  async () => {
+    const summary = await reconcileOrphanedExecutions({
+      store: prisma.execution,
+      queue: executionQueue,
+      graceMs: env.EXECUTION_RECONCILE_GRACE_MS,
+    });
+    if (summary.markedFailed || summary.skipped || summary.errors) console.log(`Execution reconciliation: ${JSON.stringify(summary)}`);
+  },
+  env.EXECUTION_RECONCILE_INTERVAL_MS,
+);
+
+// The deadline covers worker.close(), which waits for running jobs; a job cut off by it is retried after its lock
+// expires, and its container is still ended by the in-container timeout.
+exitOnShutdownSignal({
+  name: "worker",
+  timeoutMs: env.WORKER_SHUTDOWN_TIMEOUT_MS,
+  shutdown: () =>
+    runShutdownSteps([
+      { name: "stop reconciliation", run: () => reconciler.stop() },
+      { name: "close worker", run: () => worker.close() },
+      { name: "close queue", run: () => executionQueue.close() },
+      { name: "disconnect Prisma", run: () => prisma.$disconnect() },
+      // Queue and Worker share this connection, so closing them does not close it.
+      { name: "close Redis connection", run: () => (connection as unknown as { quit(): Promise<unknown> }).quit() },
+    ]),
 });

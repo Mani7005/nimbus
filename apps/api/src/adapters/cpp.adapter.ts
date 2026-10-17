@@ -3,7 +3,8 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { env } from "../config/env.js";
-import { runContainer, type ContainerRunResult, type RunContainerOptions } from "../runtime/docker.js";
+import { sandboxConfig } from "../config/sandbox.js";
+import { DEFAULT_SANDBOX, runContainer, type ContainerRunResult, type RunContainerOptions, type SandboxOptions } from "../runtime/docker.js";
 import type { ExecutionResult } from "../runtime/execution-result.js";
 import { getErrorMessage } from "../utils/errors.js";
 
@@ -19,11 +20,28 @@ export const DEFAULT_CPP_LIMITS: CppExecutionLimits = {
   maxOutputBytes: env.EXECUTION_MAX_OUTPUT_BYTES,
 };
 
+export interface CppSandboxes {
+  compile: SandboxOptions;
+  run: SandboxOptions;
+}
+
+function configuredSandbox(memoryMb: number): SandboxOptions {
+  const { pidsLimit, maxFileSizeBytes } = sandboxConfig;
+  return { ...DEFAULT_SANDBOX, memoryMb, pidsLimit, maxFileSizeBytes };
+}
+
+// g++ needs more memory than most programs; swap is disabled, so the limits are exact.
+export const DEFAULT_CPP_SANDBOXES: CppSandboxes = {
+  compile: configuredSandbox(sandboxConfig.compileMemoryMb),
+  run: configuredSandbox(sandboxConfig.runMemoryMb),
+};
+
 export type ContainerRunner = (options: RunContainerOptions) => Promise<ContainerRunResult>;
 
 export interface ExecuteCppOptions {
   runner?: ContainerRunner;
   limits?: CppExecutionLimits;
+  sandboxes?: CppSandboxes;
 }
 
 // Fixed commands: submitted code and stdin only reach the container as files in the mounted workspace.
@@ -39,6 +57,7 @@ const SIGNAL_DESCRIPTIONS: Record<number, string> = {
   8: "floating point exception (SIGFPE)",
   9: "killed (SIGKILL); the program may have exceeded the memory limit",
   11: "segmentation fault (SIGSEGV)",
+  25: "file size limit exceeded (SIGXFSZ)",
 };
 
 function seconds(ms: number): string {
@@ -112,16 +131,23 @@ export function classifyRun(run: ContainerRunResult, compileOutput: string, limi
 }
 
 export async function executeCpp(code: string, input: string, options: ExecuteCppOptions = {}): Promise<ExecutionResult> {
-  const { runner = runContainer, limits = DEFAULT_CPP_LIMITS } = options;
+  const { runner = runContainer, limits = DEFAULT_CPP_LIMITS, sandboxes = DEFAULT_CPP_SANDBOXES } = options;
   let tempDir: string | undefined;
 
   try {
     // Only workspaceDir is mounted; cid files stay outside so submitted code cannot tamper with them.
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "nimbus-"));
     const workspaceDir = path.join(tempDir, "workspace");
+    const sourceFile = path.join(workspaceDir, "main.cpp");
+    const inputFile = path.join(workspaceDir, "input.txt");
     await fs.mkdir(workspaceDir);
-    await fs.writeFile(path.join(workspaceDir, "main.cpp"), code);
-    await fs.writeFile(path.join(workspaceDir, "input.txt"), input);
+    await fs.writeFile(sourceFile, code);
+    await fs.writeFile(inputFile, input);
+    // The container user does not own these on Linux hosts: g++ must be able to write the binary and read the
+    // inputs. Explicit modes ignore the umask. tempDir itself stays private (mkdtemp creates it 0700).
+    await fs.chmod(workspaceDir, 0o777);
+    await fs.chmod(sourceFile, 0o644);
+    await fs.chmod(inputFile, 0o644);
 
     const executionId = randomUUID();
     const compile = await runner({
@@ -132,6 +158,7 @@ export async function executeCpp(code: string, input: string, options: ExecuteCp
       timeoutMs: limits.compileTimeoutMs,
       maxOutputBytes: limits.maxOutputBytes,
       terminateOnOutputLimit: false,
+      sandbox: sandboxes.compile,
     });
 
     const compileFailure = classifyCompile(compile, limits);
@@ -145,6 +172,8 @@ export async function executeCpp(code: string, input: string, options: ExecuteCp
       timeoutMs: limits.runTimeoutMs,
       maxOutputBytes: limits.maxOutputBytes,
       terminateOnOutputLimit: true,
+      readOnlyWorkspace: true,
+      sandbox: sandboxes.run,
     });
 
     return classifyRun(run, getCompileOutput(compile), limits);
