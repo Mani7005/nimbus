@@ -8,8 +8,10 @@ import {
   UNSUPPORTED_LANGUAGE_OUTPUT,
   handleFailedExecutionJob,
   isFinalAttempt,
+  findExecutor,
   processExecutionJob,
   type ExecutionJobDeps,
+  type Executor,
   type ExecutionStore,
 } from "../../src/workers/execution.processor.js";
 
@@ -25,7 +27,7 @@ interface Row {
 const ID = "cmrm5whp00000ieqonyoqlbge";
 let rows: Row[];
 let logs: { level: string; message: string }[];
-let executed: { code: string; input: string; row: Row | undefined }[];
+let executed: { language: string; code: string; input: string; row: Row | undefined }[];
 let nextResult: ExecutionResult;
 
 const store: ExecutionStore = {
@@ -37,13 +39,17 @@ const store: ExecutionStore = {
   },
 };
 
+function recordingExecutor(language: string): Executor {
+  return async (code, input) => {
+    executed.push({ language, code, input, row: rows[0] && { ...rows[0] } });
+    return nextResult;
+  };
+}
+
 function deps(overrides: Partial<ExecutionJobDeps> = {}): ExecutionJobDeps {
   return {
     executions: store,
-    executeCpp: async (code, input) => {
-      executed.push({ code, input, row: rows[0] && { ...rows[0] } });
-      return nextResult;
-    },
+    executors: { cpp: recordingExecutor("cpp"), java: recordingExecutor("java") },
     logger: {
       log: (message: string) => logs.push({ level: "log", message }),
       warn: (message: string) => logs.push({ level: "warn", message }),
@@ -105,13 +111,33 @@ describe("processExecutionJob", () => {
     });
   }
 
-  it("marks unsupported languages FAILED without throwing", async () => {
-    row().language = "brainfuck";
+  for (const language of ["cpp", "java"]) {
+    it(`dispatches ${language} executions to the ${language} executor only`, async () => {
+      row().language = language;
+      await processExecutionJob(job(), deps());
+      assert.deepEqual(executed.map((run) => run.language), [language]);
+      assert.equal(row().status, "COMPLETED");
+      assert.equal(row().output, "Hello Nimbus");
+    });
+  }
+
+  it("persists a Java compilation error in the standard output format", async () => {
+    row().language = "java";
+    nextResult = result({ outcome: "COMPILATION_ERROR", exitCode: 1, compileOutput: "Main.java:1: error: ';' expected" });
     await processExecutionJob(job(), deps());
     assert.equal(row().status, "FAILED");
-    assert.equal(row().output, UNSUPPORTED_LANGUAGE_OUTPUT);
-    assert.equal(executed.length, 0);
+    assert.equal(row().output, "Main.java:1: error: ';' expected");
   });
+
+  for (const language of ["brainfuck", "python", "Java", "", "constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+    it(`marks unsupported language ${JSON.stringify(language)} FAILED without throwing or executing`, async () => {
+      row().language = language;
+      await processExecutionJob(job(), deps());
+      assert.equal(row().status, "FAILED");
+      assert.equal(row().output, UNSUPPORTED_LANGUAGE_OUTPUT);
+      assert.equal(executed.length, 0);
+    });
+  }
 
   it("throws on infrastructure errors so BullMQ retries, leaving the execution unfinished", async () => {
     nextResult = result({ outcome: "INFRASTRUCTURE_ERROR", message: "docker daemon down" });
@@ -155,13 +181,31 @@ describe("processExecutionJob", () => {
 
   it("does not throw when the execution is deleted while running", async () => {
     const vanishing = deps({
-      executeCpp: async () => {
-        rows = [];
-        return nextResult;
+      executors: {
+        cpp: async () => {
+          rows = [];
+          return nextResult;
+        },
+        java: recordingExecutor("java"),
       },
     });
     await processExecutionJob(job(), vanishing);
     assert.ok(logs.some((log) => /removed before its result could be saved/.test(log.message)));
+  });
+});
+
+describe("findExecutor", () => {
+  const executors = deps().executors;
+
+  it("returns the executor registered for each supported language", () => {
+    assert.equal(findExecutor(executors, "cpp"), executors.cpp);
+    assert.equal(findExecutor(executors, "java"), executors.java);
+  });
+
+  it("never resolves inherited Object properties", () => {
+    for (const language of ["constructor", "__proto__", "toString", "hasOwnProperty", "isPrototypeOf", "__defineGetter__"]) {
+      assert.equal(findExecutor(executors, language), undefined, language);
+    }
   });
 });
 

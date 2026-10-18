@@ -1,5 +1,6 @@
 import { Worker } from "bullmq";
 import { executeCpp } from "../adapters/cpp.adapter.js";
+import { executeJava } from "../adapters/java.adapter.js";
 import { env } from "../config/env.js";
 import { containerCleanupConfig } from "../config/sandbox.js";
 import prisma from "../lib/prisma.js";
@@ -13,7 +14,13 @@ import { reconcileOrphanedExecutions } from "./execution.reconciler.js";
 import { startPeriodicTask } from "./periodic-task.js";
 import { exitOnShutdownSignal, runShutdownSteps } from "../lib/shutdown.js";
 
-const deps: ExecutionJobDeps = { executions: prisma.execution, executeCpp: (code, input) => executeCpp(code, input) };
+const deps: ExecutionJobDeps = {
+  executions: prisma.execution,
+  executors: {
+    cpp: (code, input) => executeCpp(code, input),
+    java: (code, input) => executeJava(code, input),
+  },
+};
 
 const worker = new Worker<ExecutionJobData>("execution-queue", (job) => processExecutionJob(job, deps), {
   connection,

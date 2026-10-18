@@ -2,24 +2,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import IdeWorkspace from "./components/IdeWorkspace";
 import Navbar from "./components/Navbar";
 import { useExecutionRunner } from "./hooks/useExecutionRunner";
+import { DEFAULT_LANGUAGE, codeAfterLanguageChange, getLanguage, type LanguageId } from "./languages";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import { me } from "./services/auth";
 import { getExecutions, type Execution } from "./services/execution";
-import { appendHistoryPage, type HistoryPage } from "./services/history";
+import { appendHistoryPage, restoreExecution, type HistoryPage } from "./services/history";
 import type { User } from "./types/api";
 import { getToken, removeToken } from "./utils/storage";
 
-const INITIAL_CODE = `#include<iostream>
-using namespace std;
-
-int main() {
-    cout << "Hello Nimbus";
-    return 0;
-}`;
-
 function App() {
-  const [code, setCode] = useState(INITIAL_CODE);
+  const [language, setLanguage] = useState<LanguageId>(DEFAULT_LANGUAGE);
+  const [code, setCode] = useState(() => getLanguage(DEFAULT_LANGUAGE).starterCode);
   const [input, setInput] = useState("");
   const [output, setOutput] = useState("Ready...");
   const [executions, setExecutions] = useState<Execution[]>([]);
@@ -96,11 +90,24 @@ function App() {
     onOutputChange: setOutput,
   });
 
-  const handleHistorySelect = useCallback((execution: Execution) => {
-    setCode(execution.code);
-    setInput(execution.input || "");
-    setOutput(execution.output || "No Output");
-  }, []);
+  const handleLanguageChange = useCallback(
+    (next: LanguageId) => {
+      setCode((current) => codeAfterLanguageChange(current, language, next));
+      setLanguage(next);
+    },
+    [language],
+  );
+
+  const handleHistorySelect = useCallback(
+    (execution: Execution) => {
+      const restored = restoreExecution(execution, language);
+      setLanguage(restored.language);
+      setCode(restored.code);
+      setInput(restored.input);
+      setOutput(restored.output);
+    },
+    [language],
+  );
 
   const handleLogout = useCallback(() => {
     cancelExecution();
@@ -123,8 +130,16 @@ function App() {
 
   return (
     <div className="min-h-screen bg-zinc-950">
-      <Navbar onRun={() => void runExecution("cpp", code, input)} onLogout={handleLogout} user={user} running={isRunning} />
+      <Navbar
+        onRun={() => void runExecution(language, code, input)}
+        onLogout={handleLogout}
+        user={user}
+        running={isRunning}
+        language={language}
+        onLanguageChange={handleLanguageChange}
+      />
       <IdeWorkspace
+        language={language}
         code={code}
         input={input}
         output={output}

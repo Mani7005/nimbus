@@ -100,6 +100,43 @@ describe("POST /execute validation", () => {
     });
   }
 
+  it("accepts a Java request with the same 201 response and queue payload", async () => {
+    const code = "public class Main { public static void main(String[] a) {} }";
+    const { status, body } = await call("POST", "/", { language: "java", code, input: "" });
+    assert.equal(status, 201);
+    assert.deepEqual(body.execution, { id: VALID_ID, language: "java", code, input: "", userId: "user-1", status: "PENDING" });
+    assert.deepEqual(prismaCalls, ["create"]);
+    assert.deepEqual(queued, [{ executionId: VALID_ID }]);
+  });
+
+  for (const [name, language] of [
+    ["python", "python"],
+    ["constructor", "constructor"],
+    ["__proto__", "__proto__"],
+    ["an empty language", ""],
+    ["a differently cased language", "CPP"],
+    ["a non-string language", 7],
+    ["an array language", ["java"]],
+  ] as const) {
+    it(`returns 400 for ${name} without touching the database or queue`, async () => {
+      const { status, body } = await call("POST", "/", { language, code: "int main() {}" });
+      assert.equal(status, 400);
+      assert.deepEqual(Object.keys(body).sort(), ["message", "success"]);
+      assert.equal(body.success, false);
+      assert.match(body.message ?? "", /^language: /);
+      assert.deepEqual(prismaCalls, []);
+      assert.deepEqual(queued, []);
+    });
+  }
+
+  it("returns 400 for a missing language without touching the database or queue", async () => {
+    const { status, body } = await call("POST", "/", { code: "int main() {}" });
+    assert.equal(status, 400);
+    assert.match(body.message ?? "", /^language: /);
+    assert.deepEqual(prismaCalls, []);
+    assert.deepEqual(queued, []);
+  });
+
   it("returns 400 when no JSON body is sent", async () => {
     const { status, body } = await call("POST", "/");
     assert.equal(status, 400);

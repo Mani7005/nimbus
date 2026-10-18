@@ -42,13 +42,15 @@ const store: ExecutionStore = {
 };
 
 const silent = { log: () => undefined, warn: () => undefined, error: () => undefined };
+const scriptedExecutor = async (code: string) => {
+  const queue = scripted.get(code)!;
+  return queue.length > 1 ? queue.shift()! : queue[0];
+};
+
 const deps: ExecutionJobDeps = {
   executions: store,
   logger: silent,
-  executeCpp: async (code) => {
-    const queue = scripted.get(code)!;
-    return queue.length > 1 ? queue.shift()! : queue[0];
-  },
+  executors: { cpp: scriptedExecutor, java: scriptedExecutor },
 };
 
 function outcome(fields: Partial<ExecutionResult> & Pick<ExecutionResult, "outcome">): ExecutionResult {

@@ -3,7 +3,10 @@ import type { ContainerCleanupMode } from "../config/sandbox.js";
 import { getErrorMessage } from "../utils/errors.js";
 import type { SpawnFn } from "./docker.js";
 
-/** Names executeCpp gives its containers. Never matches nimbus-postgres, nimbus-redis or anything else. */
+/**
+ * Names executeCompiledProgram gives the compile and run containers of every language. Never matches nimbus-postgres,
+ * nimbus-redis or anything else.
+ */
 export const EXECUTION_CONTAINER_NAME = /^nimbus-(compile|run)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const CONTAINER_ID = /^[0-9a-f]{64}$/;

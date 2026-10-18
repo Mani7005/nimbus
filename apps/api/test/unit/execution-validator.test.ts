@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { NextFunction, Request, Response } from "express";
 import { validateBody, validateParams } from "../../src/middleware/validate.middleware.js";
+import { SUPPORTED_LANGUAGES } from "../../src/runtime/languages.js";
 import {
   MAX_CODE_LENGTH,
   MAX_INPUT_LENGTH,
-  MAX_LANGUAGE_LENGTH,
   executeSchema,
   executionIdParamsSchema,
 } from "../../src/validators/execution.validator.js";
@@ -37,8 +37,17 @@ describe("executeSchema", () => {
     assert.ok(executeSchema.safeParse({ language: "cpp", code: "int main() {}", input: "" }).success);
   });
 
+  it("accepts every supported language", () => {
+    assert.deepEqual(SUPPORTED_LANGUAGES, ["cpp", "java"]);
+    for (const language of SUPPORTED_LANGUAGES) {
+      const parsed = executeSchema.safeParse({ language, code: "x" });
+      assert.ok(parsed.success, language);
+      assert.equal(parsed.data.language, language);
+    }
+  });
+
   it("accepts values exactly at the limits", () => {
-    const body = { language: "c".repeat(MAX_LANGUAGE_LENGTH), code: "x".repeat(MAX_CODE_LENGTH), input: "y".repeat(MAX_INPUT_LENGTH) };
+    const body = { language: "java", code: "x".repeat(MAX_CODE_LENGTH), input: "y".repeat(MAX_INPUT_LENGTH) };
     assert.ok(executeSchema.safeParse(body).success);
   });
 
@@ -53,7 +62,15 @@ describe("executeSchema", () => {
     ["null input", { language: "cpp", code: "x", input: null }],
     ["oversized code", { language: "cpp", code: "x".repeat(MAX_CODE_LENGTH + 1) }],
     ["oversized input", { language: "cpp", code: "x", input: "y".repeat(MAX_INPUT_LENGTH + 1) }],
-    ["oversized language", { language: "c".repeat(MAX_LANGUAGE_LENGTH + 1), code: "x" }],
+    ["unsupported language python", { language: "python", code: "x" }],
+    ["language with different case", { language: "Java", code: "x" }],
+    ["language with surrounding whitespace", { language: " cpp ", code: "x" }],
+    ["language constructor", { language: "constructor", code: "x" }],
+    ["language __proto__", { language: "__proto__", code: "x" }],
+    ["language toString", { language: "toString", code: "x" }],
+    ["object language", { language: { cpp: true }, code: "x" }],
+    ["array language", { language: ["cpp"], code: "x" }],
+    ["null language", { language: null, code: "x" }],
     ["missing body", undefined],
     ["array body", []],
   ] as const) {

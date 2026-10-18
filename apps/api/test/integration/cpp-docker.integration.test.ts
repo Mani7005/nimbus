@@ -1,7 +1,7 @@
 // REAL Docker: runs gcc:14 containers. Skipped unless NIMBUS_DOCKER_INTEGRATION=1.
 // Requires a running Docker daemon and a pre-pulled image (`docker pull gcc:14`), since runs use --pull=never.
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -9,22 +9,10 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { DEFAULT_CPP_SANDBOXES, executeCpp, type CppExecutionLimits } from "../../src/adapters/cpp.adapter.js";
 import { HARD_TIMEOUT_GRACE_MS, buildDockerRunArgs } from "../../src/runtime/docker.js";
+import { leakedExecutionContainers } from "./docker-helpers.js";
 
 const enabled = process.env.NIMBUS_DOCKER_INTEGRATION === "1";
 const LIMITS: CppExecutionLimits = { compileTimeoutMs: 60000, runTimeoutMs: 5000, maxOutputBytes: 4096 };
-
-// Matches only the per-execution containers named in executeCpp, not nimbus-postgres / nimbus-redis.
-const EXECUTION_CONTAINER_NAME = /^nimbus-(compile|run)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-// Containers labelled nimbus.test are deliberate stand-ins started by container-cleanup.integration.test.ts.
-function leakedExecutionContainers(): string[] {
-  const lines = execFileSync("docker", ["ps", "-a", "--format", '{{.Names}}|{{.Label "nimbus.test"}}'], { encoding: "utf8" });
-  return lines
-    .split(/\r?\n/)
-    .map((line) => line.trim().split("|"))
-    .filter(([name, testLabel]) => EXECUTION_CONTAINER_NAME.test(name) && !testLabel)
-    .map(([name]) => name);
-}
 
 describe("executeCpp with real Docker", { skip: enabled ? false : "set NIMBUS_DOCKER_INTEGRATION=1 to run", timeout: 300000 }, () => {
   it("runs a program with stdin", async () => {

@@ -13,7 +13,7 @@ export interface SandboxOptions {
   maxFileSizeBytes: number;
   /** Size of /tmp, the only writable path besides a writable workspace. */
   tmpfsMb: number;
-  /** Unprivileged uid:gid; 65534 is `nobody` in the Debian-based gcc image. */
+  /** Unprivileged uid:gid; 65534 is `nobody` in both the Debian-based gcc image and the Ubuntu-based Temurin image. */
   user: string;
 }
 

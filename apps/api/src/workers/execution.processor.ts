@@ -6,6 +6,7 @@ import {
   toExecutionStatus,
   type ExecutionResult,
 } from "../runtime/execution-result.js";
+import type { SupportedLanguage } from "../runtime/languages.js";
 import { getErrorMessage } from "../utils/errors.js";
 
 // Only executions in these states may be (re)started or marked failed, so a retry never overwrites a finished result.
@@ -21,10 +22,17 @@ export interface ExecutionStore {
   }): Promise<{ count: number }>;
 }
 
+export type Executor = (code: string, input: string) => Promise<ExecutionResult>;
+
 export interface ExecutionJobDeps {
   executions: ExecutionStore;
-  executeCpp: (code: string, input: string) => Promise<ExecutionResult>;
+  executors: Record<SupportedLanguage, Executor>;
   logger?: Pick<Console, "log" | "warn" | "error">;
+}
+
+/** Own properties only, so values such as "constructor" or "__proto__" never resolve to inherited members. */
+export function findExecutor(executors: Record<SupportedLanguage, Executor>, language: string): Executor | undefined {
+  return Object.hasOwn(executors, language) ? executors[language as SupportedLanguage] : undefined;
 }
 
 type ProcessableJob = Pick<Job<ExecutionJobData>, "id" | "data" | "attemptsMade">;
@@ -53,12 +61,14 @@ export async function processExecutionJob(job: ProcessableJob, deps: ExecutionJo
   let status: string;
   let output: string;
 
-  if (execution.language === "cpp") {
-    const result = await deps.executeCpp(execution.code, execution.input || "");
+  const execute = findExecutor(deps.executors, execution.language);
+  if (execute) {
+    const result = await execute(execution.code, execution.input || "");
     if (result.outcome === "INFRASTRUCTURE_ERROR") throw new Error(`Infrastructure error: ${result.message}`);
     status = toExecutionStatus(result.outcome);
     output = formatExecutionOutput(result);
   } else {
+    // The API only accepts supported languages; this covers older records and jobs queued before that check.
     status = "FAILED";
     output = UNSUPPORTED_LANGUAGE_OUTPUT;
   }

@@ -1,13 +1,14 @@
 import { z } from "zod";
+import { SUPPORTED_LANGUAGES } from "../runtime/languages.js";
 
 // Combined with JSON escaping these stay under express.json()'s default 100 kB body limit,
 // so oversized fields get a 400 from validation instead of a 413 from the body parser.
 export const MAX_CODE_LENGTH = 50_000;
 export const MAX_INPUT_LENGTH = 20_000;
-export const MAX_LANGUAGE_LENGTH = 32;
 
 export const executeSchema = z.object({
-  language: z.string().min(1).max(MAX_LANGUAGE_LENGTH),
+  // Unsupported languages are rejected here, before an execution is stored or queued.
+  language: z.enum(SUPPORTED_LANGUAGES),
   code: z.string().min(1).max(MAX_CODE_LENGTH),
   input: z.string().max(MAX_INPUT_LENGTH).optional(),
 });
