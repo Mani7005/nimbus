@@ -22,7 +22,7 @@ defaults:
 
 env:
   NODE_VERSION: "22"
-  PNPM_VERSION: "11.13.0"
+  PNPM_VERSION: "11.28.6"
 
 jobs:
   api:
