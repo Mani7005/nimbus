@@ -1,8 +1,10 @@
 import axios from "axios";
+import { resolveApiBaseUrl } from "../config/api-url";
 import { getToken, removeToken } from "../utils/storage";
 
+// Production builds are also validated in vite.config.ts, so a missing VITE_API_URL fails the build, not the page.
 const api = axios.create({
-  baseURL: "http://localhost:3000",
+  baseURL: resolveApiBaseUrl({ VITE_API_URL: import.meta.env.VITE_API_URL, production: import.meta.env.PROD }),
 });
 
 // Their 401 means "wrong credentials", not "session expired", so the page must not reload under the user.

@@ -8,6 +8,7 @@ import connection from "../lib/redis.js";
 import type { ExecutionJobData } from "../queues/execution.job.js";
 import { executionQueue } from "../queues/execution.queue.js";
 import { cleanupLeakedContainers, createDockerCleanupCli } from "../runtime/container-cleanup.js";
+import { describeRetention, isRetentionEnabled, pruneExecutionHistory } from "../services/execution-retention.js";
 import { getErrorMessage } from "../utils/errors.js";
 import { handleFailedExecutionJob, processExecutionJob, type ExecutionJobDeps } from "./execution.processor.js";
 import { reconcileOrphanedExecutions } from "./execution.reconciler.js";
@@ -48,6 +49,19 @@ const reconciler = startPeriodicTask(
   env.EXECUTION_RECONCILE_INTERVAL_MS,
 );
 
+const retentionLimits = { maxPerUser: env.EXECUTION_HISTORY_MAX_PER_USER, maxTotal: env.EXECUTION_HISTORY_MAX_TOTAL };
+console.log(describeRetention(retentionLimits));
+const retention = isRetentionEnabled(retentionLimits)
+  ? startPeriodicTask(
+      "Execution history retention",
+      async () => {
+        const summary = await pruneExecutionHistory(prisma, retentionLimits);
+        if (summary.deletedPerUser || summary.deletedTotal) console.log(`Execution history retention: ${JSON.stringify(summary)}`);
+      },
+      env.EXECUTION_RETENTION_INTERVAL_MS,
+    )
+  : undefined;
+
 // The deadline covers worker.close(), which waits for running jobs; a job cut off by it is retried after its lock
 // expires, and its container is still ended by the in-container timeout.
 exitOnShutdownSignal({
@@ -56,6 +70,7 @@ exitOnShutdownSignal({
   shutdown: () =>
     runShutdownSteps([
       { name: "stop reconciliation", run: () => reconciler.stop() },
+      { name: "stop history retention", run: async () => retention?.stop() },
       { name: "close worker", run: () => worker.close() },
       { name: "close queue", run: () => executionQueue.close() },
       { name: "disconnect Prisma", run: () => prisma.$disconnect() },

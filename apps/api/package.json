@@ -7,6 +7,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "worker": "tsx src/workers/execution.worker.ts",
+    "worker:start": "node dist/workers/execution.worker.js",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "tsx --test --experimental-test-module-mocks --env-file=test/unit/test.env test/unit/*.test.ts",
     "test:integration": "tsx --test test/integration/*.test.ts"

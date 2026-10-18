@@ -7,8 +7,12 @@ import {
   getExecution,
   getUserExecutions,
 } from "../services/execution.service.js";
-import { ActiveExecutionLimitError } from "../services/execution-limit.js";
+import { ActiveExecutionLimitError, GlobalActiveExecutionLimitError } from "../services/execution-limit.js";
 import type { ExecuteRequestBody, ExecutionListQuery } from "../validators/execution.validator.js";
+
+export const AT_CAPACITY_MESSAGE = "Nimbus is busy running other submissions. Please try again in a minute.";
+/** Seconds sent in Retry-After when the service-wide cap is reached. */
+export const AT_CAPACITY_RETRY_AFTER_SECONDS = 30;
 
 export async function execute(req: AuthRequest, res: Response): Promise<void> {
   const { language, code, input } = req.body as ExecuteRequestBody;
@@ -21,6 +25,12 @@ export async function execute(req: AuthRequest, res: Response): Promise<void> {
         success: false,
         message: `You already have ${error.limit} unfinished executions. Wait for one to finish before submitting another.`,
       });
+      return;
+    }
+    // 503 rather than 429: the user did nothing wrong; the service as a whole is at capacity.
+    if (error instanceof GlobalActiveExecutionLimitError) {
+      res.set("Retry-After", String(AT_CAPACITY_RETRY_AFTER_SECONDS));
+      res.status(503).json({ success: false, message: AT_CAPACITY_MESSAGE });
       return;
     }
     if (!(error instanceof ExecutionUnavailableError)) throw error;

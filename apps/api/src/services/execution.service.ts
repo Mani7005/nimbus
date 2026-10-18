@@ -33,9 +33,18 @@ async function markEnqueueFailed(id: string): Promise<boolean> {
   }
 }
 
-/** Throws ActiveExecutionLimitError, before writing anything, when the user is at the unfinished-execution cap. */
+/**
+ * Throws ActiveExecutionLimitError (the user's cap) or GlobalActiveExecutionLimitError (the service-wide cap) before
+ * writing anything or queueing a job.
+ */
 export async function createExecution(userId: string, language: string, code: string, input: string) {
-  const execution = await createExecutionWithinLimit(prisma, userId, { language, code, input }, env.EXECUTION_MAX_ACTIVE_PER_USER);
+  const execution = await createExecutionWithinLimit(
+    prisma,
+    userId,
+    { language, code, input },
+    env.EXECUTION_MAX_ACTIVE_PER_USER,
+    env.EXECUTION_MAX_ACTIVE_TOTAL,
+  );
 
   try {
     await enqueueExecution(executionQueue, execution.id, env.EXECUTION_ENQUEUE_TIMEOUT_MS);

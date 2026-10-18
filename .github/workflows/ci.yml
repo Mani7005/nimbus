@@ -66,7 +66,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter web lint
       - run: pnpm --filter web test
-      - run: pnpm --filter web build
+      - name: Build (production mode)
+        # Production builds require VITE_API_URL; the reserved .invalid domain can never resolve, so this build cannot
+        # reach a real API. The deployed build sets the real URL.
+        env:
+          VITE_API_URL: https://api.nimbus-ci.invalid
+        run: pnpm --filter web build
 
   integration:
     name: Postgres and Redis integration tests

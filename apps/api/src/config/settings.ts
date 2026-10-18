@@ -38,6 +38,45 @@ export function readSecretSetting(name: string, minLength: number, source: Sourc
   return raw;
 }
 
+export interface OriginListOptions {
+  /** Used when the setting is unset; undefined makes the setting required. */
+  fallback?: readonly string[];
+  /** Restricts every origin to https:. */
+  httpsOnly?: boolean;
+}
+
+/**
+ * Comma-separated list of exact browser origins (scheme, host and optional port, e.g. "https://app.example.com").
+ * Wildcards, "null", paths, queries, fragments and credentials are rejected, so only the listed sites are allowed.
+ * Each origin is normalized to the form browsers send in the Origin header (trailing slash and default port dropped).
+ */
+export function readOriginListSetting(name: string, options: OriginListOptions, source: Source = process.env): string[] {
+  const raw = readRaw(name, source);
+  if (raw === undefined) {
+    if (options.fallback) return [...options.fallback];
+    throw new Error(`${name} is required`);
+  }
+
+  const protocols = options.httpsOnly ? ["https:"] : ["http:", "https:"];
+  const origins = raw.split(",").map((entry) => entry.trim());
+  for (const entry of origins) {
+    if (entry === "") throw new Error(`${name} contains an empty origin`);
+    if (entry.includes("*")) throw new Error(`${name} must not contain wildcards, got "${entry}"`);
+    let url: URL;
+    try {
+      url = new URL(entry);
+    } catch {
+      throw new Error(`${name} must list origins such as https://app.example.com, got "${entry}"`);
+    }
+    if (!protocols.includes(url.protocol)) throw new Error(`${name} origins must use ${protocols.map((p) => `${p}//`).join(" or ")}, got "${entry}"`);
+    if (url.pathname !== "/" || url.search || url.hash || url.username || url.password || /[?#]/.test(entry)) {
+      throw new Error(`${name} must list bare origins without a path, query or credentials, got "${entry}"`);
+    }
+  }
+  // URL#origin is the form browsers send: lower-case, punycode host, default port omitted.
+  return [...new Set(origins.map((entry) => new URL(entry).origin))];
+}
+
 /** Required URL with one of the given protocols (e.g. "redis:"). The value is never reported: it may hold a password. */
 export function readUrlSetting(name: string, protocols: readonly string[], source: Source = process.env): string {
   const raw = readRaw(name, source);
