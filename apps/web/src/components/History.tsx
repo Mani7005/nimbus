@@ -3,6 +3,10 @@ import type { Execution, ExecutionStatus } from "../services/execution";
 interface HistoryProps {
   executions: Execution[];
   onSelect: (execution: Execution) => void;
+  /** More, older executions can be loaded. */
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
 }
 
 const statusColor: Record<ExecutionStatus, string> = {
@@ -13,7 +17,7 @@ const statusColor: Record<ExecutionStatus, string> = {
   PENDING: "bg-gray-600",
 };
 
-function History({ executions, onSelect }: HistoryProps) {
+function History({ executions, onSelect, hasMore, loadingMore, onLoadMore }: HistoryProps) {
   return (
     <div className="bg-zinc-900 rounded-xl p-4 h-full overflow-y-auto">
       <h2 className="text-white text-xl font-bold mb-4">Execution History</h2>
@@ -29,6 +33,16 @@ function History({ executions, onSelect }: HistoryProps) {
               <p className="text-gray-500 text-xs mt-2">{new Date(execution.createdAt).toLocaleString()}</p>
             </button>
           ))}
+          {hasMore && (
+            <button
+              type="button"
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              className="w-full text-sm text-blue-400 hover:text-blue-300 disabled:text-zinc-500 disabled:cursor-not-allowed py-2"
+            >
+              {loadingMore ? "Loading..." : "Load more"}
+            </button>
+          )}
         </div>
       )}
     </div>

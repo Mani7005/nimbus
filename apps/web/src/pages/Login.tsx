@@ -1,5 +1,7 @@
 import { useState } from "react";
 import AuthCard from "../components/AuthCard";
+import AuthInput from "../components/AuthInput";
+import { getApiErrorMessage } from "../services/api-errors";
 import { login } from "../services/auth";
 import { saveToken } from "../utils/storage";
 
@@ -19,8 +21,8 @@ function Login({ onLogin, goToRegister }: LoginProps) {
       const data = await login(email, password);
       saveToken(data.token);
       onLogin();
-    } catch {
-      alert("Invalid Email or Password");
+    } catch (error) {
+      alert(getApiErrorMessage(error, "Login failed. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -28,8 +30,8 @@ function Login({ onLogin, goToRegister }: LoginProps) {
 
   return (
     <AuthCard subtitle="Secure Online IDE">
-      <input className="w-full p-3 mb-4 rounded bg-zinc-800 text-white" placeholder="Email" value={email} onChange={(event) => setEmail(event.target.value)} />
-      <input type="password" className="w-full p-3 mb-6 rounded bg-zinc-800 text-white" placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} />
+      <AuthInput className="mb-4" placeholder="Email" value={email} onChange={(event) => setEmail(event.target.value)} />
+      <AuthInput type="password" className="mb-6" placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} />
       <button onClick={handleLogin} className="w-full bg-blue-600 hover:bg-blue-700 p-3 rounded text-white">{loading ? "Signing In..." : "Login"}</button>
       <p className="text-zinc-400 mt-5 text-center">Don't have an account? <button onClick={goToRegister} className="text-blue-400">Register</button></p>
     </AuthCard>

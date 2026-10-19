@@ -1,239 +1,156 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import IdeWorkspace from "./components/IdeWorkspace";
 import Navbar from "./components/Navbar";
-import Output from "./components/Output";
-import History from "./components/History";
-import CodeEditor from "./components/CodeEditor";
-import { me } from "./services/auth";
+import { useExecutionRunner } from "./hooks/useExecutionRunner";
+import { DEFAULT_LANGUAGE, codeAfterLanguageChange, getLanguage, type LanguageId } from "./languages";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
-
+import { me } from "./services/auth";
+import { getExecutions, type Execution } from "./services/execution";
+import { appendHistoryPage, restoreExecution, type HistoryPage } from "./services/history";
+import type { User } from "./types/api";
 import { getToken, removeToken } from "./utils/storage";
 
-import {
-  executeCode,
-  getExecution,
-  getExecutions,
-} from "./services/execution";
-
 function App() {
-  const [code, setCode] = useState(`#include<iostream>
-using namespace std;
-
-int main() {
-    cout << "Hello Nimbus";
-    return 0;
-}`);
-
-  const [output, setOutput] = useState("Ready...");
-  const [language, setLanguage] = useState("cpp");
+  const [language, setLanguage] = useState<LanguageId>(DEFAULT_LANGUAGE);
+  const [code, setCode] = useState(() => getLanguage(DEFAULT_LANGUAGE).starterCode);
   const [input, setInput] = useState("");
-
-  const [executions, setExecutions] = useState<any[]>([]);
-  const [user, setUser] = useState<any>(null);
-
-  const [isLoggedIn, setIsLoggedIn] = useState(
-    Boolean(getToken())
-  );
-
+  const [output, setOutput] = useState("Ready...");
+  const [executions, setExecutions] = useState<Execution[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(Boolean(getToken()));
   const [showRegister, setShowRegister] = useState(false);
+  // Bumped whenever the list is replaced or cleared, so a "Load more" response that arrives afterwards is dropped.
+  const historyVersion = useRef(0);
 
-  // ------------------------
-  // Load History
-  // ------------------------
-
-  const loadHistory = async () => {
+  const fetchHistory = useCallback(async (): Promise<HistoryPage> => {
     try {
-      const data = await getExecutions();
-      setExecutions(data.executions);
-    } catch (err) {
-      console.error(err);
+      const { executions: history, nextCursor: cursor } = await getExecutions();
+      return { executions: history, nextCursor: cursor };
+    } catch (error) {
+      console.error(error);
+      return { executions: [], nextCursor: null };
     }
-  };
+  }, []);
 
-  // ------------------------
-  // Load User
-  // ------------------------
+  const showHistory = useCallback((page: HistoryPage) => {
+    historyVersion.current++;
+    setExecutions(page.executions);
+    setNextCursor(page.nextCursor);
+  }, []);
 
-  const loadUser = async () => {
+  const refreshHistory = useCallback(async () => {
+    showHistory(await fetchHistory());
+  }, [fetchHistory, showHistory]);
+
+  const loadMoreHistory = useCallback(async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    const version = historyVersion.current;
     try {
-      const data = await me();
-      setUser(data.user);
-    } catch (err) {
-      console.error(err);
+      const page = await getExecutions({ cursor: nextCursor });
+      if (version !== historyVersion.current) return;
+      setExecutions((current) => appendHistoryPage(current, page.executions));
+      setNextCursor(page.nextCursor);
+    } catch (error) {
+      // E.g. the cursor's execution was deleted meanwhile; start again from the newest page.
+      console.error(error);
+      if (version === historyVersion.current) await refreshHistory();
+    } finally {
+      setLoadingMore(false);
     }
-  };
+  }, [nextCursor, loadingMore, refreshHistory]);
+
+  const fetchUser = useCallback(async (): Promise<User | null> => {
+    try {
+      const { user: currentUser } = await me();
+      return currentUser;
+    } catch (error) {
+      console.error(error);
+      return null;
+    }
+  }, []);
 
   useEffect(() => {
-    if (isLoggedIn) {
-      loadHistory();
-      loadUser();
+    if (!isLoggedIn) {
+      return;
     }
-  }, [isLoggedIn]);
 
-  // ------------------------
-  // Run Code
-  // ------------------------
+    void (async () => {
+      const [history, currentUser] = await Promise.all([fetchHistory(), fetchUser()]);
+      showHistory(history);
+      setUser(currentUser);
+    })();
+  }, [fetchHistory, fetchUser, isLoggedIn, showHistory]);
 
-  const handleRun = async () => {
-    try {
-      setOutput("Running...");
+  const { run: runExecution, cancel: cancelExecution, isRunning } = useExecutionRunner({
+    onComplete: refreshHistory,
+    onOutputChange: setOutput,
+  });
 
-      const result = await executeCode(
-        language,
-        code,
-        input
-      );
+  const handleLanguageChange = useCallback(
+    (next: LanguageId) => {
+      setCode((current) => codeAfterLanguageChange(current, language, next));
+      setLanguage(next);
+    },
+    [language],
+  );
 
-      const executionId = result.execution.id;
+  const handleHistorySelect = useCallback(
+    (execution: Execution) => {
+      const restored = restoreExecution(execution, language);
+      setLanguage(restored.language);
+      setCode(restored.code);
+      setInput(restored.input);
+      setOutput(restored.output);
+    },
+    [language],
+  );
 
-      const interval = setInterval(async () => {
-        try {
-          const response = await getExecution(
-            executionId
-          );
-
-          const execution = response.execution;
-
-          if (
-            execution.status === "COMPLETED" ||
-            execution.status === "FAILED" ||
-            execution.status === "TIMEOUT"
-          ) {
-            clearInterval(interval);
-
-            setOutput(
-              execution.output || "No Output"
-            );
-
-            await loadHistory();
-          }
-        } catch (err) {
-          clearInterval(interval);
-
-          console.error(err);
-
-          setOutput(
-            "Failed to fetch execution."
-          );
-        }
-      }, 1000);
-    } catch (err) {
-      console.error(err);
-
-      setOutput("Execution Failed");
-    }
-  };
-
-  // ------------------------
-  // Logout
-  // ------------------------
-
-  const logout = () => {
+  const handleLogout = useCallback(() => {
+    cancelExecution();
+    historyVersion.current++;
     removeToken();
     setIsLoggedIn(false);
     setUser(null);
-  };
-
-  // ------------------------
-  // Restore History
-  // ------------------------
-
-  const handleHistorySelect = (
-    execution: any
-  ) => {
-    setCode(execution.code);
-
-    setOutput(
-      execution.output || "No Output"
-    );
-
-    setLanguage(execution.language);
-
-    setInput(execution.input || "");
-  };
-
-  // ------------------------
-  // Login/Register
-  // ------------------------
+    setExecutions([]);
+    setNextCursor(null);
+    setOutput("Ready...");
+  }, [cancelExecution]);
 
   if (!isLoggedIn) {
     return showRegister ? (
-      <Register
-        onRegister={() => setIsLoggedIn(true)}
-        goToLogin={() => setShowRegister(false)}
-      />
+      <Register onRegister={() => setIsLoggedIn(true)} goToLogin={() => setShowRegister(false)} />
     ) : (
-      <Login
-        onLogin={() => setIsLoggedIn(true)}
-        goToRegister={() => setShowRegister(true)}
-      />
+      <Login onLogin={() => setIsLoggedIn(true)} goToRegister={() => setShowRegister(true)} />
     );
   }
-
-  // ------------------------
-  // IDE
-  // ------------------------
 
   return (
     <div className="min-h-screen bg-zinc-950">
       <Navbar
-        onRun={handleRun}
-        onLogout={logout}
+        onRun={() => void runExecution(language, code, input)}
+        onLogout={handleLogout}
         user={user}
+        running={isRunning}
+        language={language}
+        onLanguageChange={handleLanguageChange}
       />
-
-      <div className="p-6 h-[calc(100vh-64px)]">
-        <div className="grid grid-cols-3 gap-6 h-full">
-
-          {/* Editor */}
-
-          <div className="col-span-2">
-            <CodeEditor
-              code={code}
-              setCode={setCode}
-            />
-          </div>
-
-          {/* Right Panel */}
-
-          <div className="flex flex-col gap-4">
-
-            {/* Output */}
-
-            <div className="flex-1">
-              <Output output={output} />
-            </div>
-
-            {/* Input */}
-
-            <div className="bg-zinc-900 rounded-lg p-4">
-              <h2 className="text-white font-semibold mb-2">
-                Input
-              </h2>
-
-              <textarea
-                value={input}
-                onChange={(e) =>
-                  setInput(e.target.value)
-                }
-                placeholder="Enter stdin here..."
-                className="w-full h-28 bg-zinc-950 text-white rounded p-3 outline-none resize-none"
-              />
-            </div>
-
-            {/* History */}
-
-            <div className="flex-1">
-              <History
-                executions={executions}
-                onSelect={handleHistorySelect}
-              />
-            </div>
-
-          </div>
-
-        </div>
-      </div>
+      <IdeWorkspace
+        language={language}
+        code={code}
+        input={input}
+        output={output}
+        executions={executions}
+        hasMoreHistory={nextCursor !== null}
+        loadingMoreHistory={loadingMore}
+        onCodeChange={setCode}
+        onInputChange={setInput}
+        onHistorySelect={handleHistorySelect}
+        onLoadMoreHistory={() => void loadMoreHistory()}
+      />
     </div>
   );
 }

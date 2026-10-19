@@ -1,0 +1,189 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "rumani/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # Explicit bash runs steps with -eo pipefail, so a failure anywhere in a pipeline fails the step.
+    shell: bash
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "11.28.6"
+
+jobs:
+  api:
+    name: API typecheck, build and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Generate Prisma Client
+        run: pnpm --filter api exec prisma generate
+      - run: pnpm --filter api typecheck
+      - run: pnpm --filter api build
+      # Unit tests load test/unit/test.env and mock Prisma, BullMQ and Docker; no services are needed.
+      - run: pnpm --filter api test
+
+  web:
+    name: Web lint, tests and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter web lint
+      - run: pnpm --filter web test
+      - name: Build (production mode)
+        # Production builds require VITE_API_URL; the reserved .invalid domain can never resolve, so this build cannot
+        # reach a real API. The deployed build sets the real URL.
+        env:
+          VITE_API_URL: https://api.nimbus-ci.invalid
+        run: pnpm --filter web build
+
+  integration:
+    name: Postgres and Redis integration tests
+    needs: api
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: nimbus
+          POSTGRES_PASSWORD: nimbus
+          POSTGRES_DB: nimbus_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nimbus -d nimbus_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # Throwaway values for the job's own service containers; not secrets and not used anywhere else.
+      DATABASE_URL: postgresql://nimbus:nimbus@localhost:5432/nimbus_ci
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-only-jwt-secret-for-integration-tests
+      NODE_ENV: test
+      NIMBUS_POSTGRES_INTEGRATION: "1"
+      NIMBUS_REDIS_INTEGRATION: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Generate Prisma Client
+        run: pnpm --filter api exec prisma generate
+      # The Postgres tests create and drop their own throwaway databases; Docker test files skip without their flag.
+      - name: Run integration tests one file at a time
+        working-directory: apps/api
+        run: pnpm exec tsx --test --test-concurrency=1 test/integration/*.integration.test.ts
+
+  docker:
+    name: Docker sandbox tests (C++ and Java)
+    needs: api
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Required by config/env.ts at import time; these tests never connect to Postgres or Redis.
+      DATABASE_URL: postgresql://nimbus:nimbus@localhost:5432/nimbus_unused
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-only-jwt-secret-for-docker-tests-only
+      NODE_ENV: test
+      NIMBUS_DOCKER_INTEGRATION: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Execution containers run with --pull=never, so the exact images must be present beforehand. The Java
+      # reference is read from the exported JAVA_IMAGE constant, so the pinned digest is never retyped here.
+      - name: Pull sandbox images
+        working-directory: apps/api
+        run: |
+          java_image="$(pnpm exec tsx -e 'import { JAVA_IMAGE } from "./src/adapters/java.adapter.ts"; console.log(JAVA_IMAGE)' | tail -n 1)"
+          if [[ ! "$java_image" =~ ^eclipse-temurin:21-jdk-noble@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Unexpected JAVA_IMAGE reference: '$java_image'"
+            exit 1
+          fi
+          echo "Java image: $java_image"
+          docker pull gcc:14
+          docker pull "$java_image"
+          docker image inspect --format '{{.Id}}' gcc:14 "$java_image"
+      # Listed explicitly: the Postgres and Redis files would only skip here, but this job has neither service nor a
+      # generated Prisma Client.
+      - name: Run Docker sandbox tests one file at a time
+        working-directory: apps/api
+        run: >-
+          pnpm exec tsx --test --test-concurrency=1
+          test/integration/cpp-docker.integration.test.ts
+          test/integration/java-docker.integration.test.ts
+          test/integration/container-cleanup.integration.test.ts
+      - name: Fail on leaked execution containers
+        if: ${{ !cancelled() }}
+        run: |
+          names="$(docker ps --all --format '{{.Names}}')"
+          # grep exits 1 when nothing matches, which is the passing case; any other non-zero status is an error.
+          leaked="$(grep -E '^nimbus-(compile|run)-' <<< "$names")" || [ $? -eq 1 ]
+          if [ -n "$leaked" ]; then
+            echo "::error::Leaked execution containers:"
+            echo "$leaked"
+            exit 1
+          fi
+          echo "No leaked execution containers."

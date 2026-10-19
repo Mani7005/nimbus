@@ -1,61 +1,49 @@
-import fs from "fs/promises";
-import path from "path";
-import os from "os";
-import { executeCommand } from "../runtime/docker.js";
+import { sandboxConfig } from "../config/sandbox.js";
+import type { ExecutionResult } from "../runtime/execution-result.js";
+import {
+  DEFAULT_EXECUTION_LIMITS,
+  configuredSandbox,
+  executeCompiledProgram,
+  type CompiledLanguage,
+  type ContainerRunner,
+  type ExecutionLimits,
+  type StageSandboxes,
+} from "./compiled-program.js";
 
-export async function executeCpp(
-  code: string,
-  input: string
-) {
-  // Create temporary directory
-  const tempDir = await fs.mkdtemp(
-    path.join(os.tmpdir(), "nimbus-")
-  );
+export {
+  classifyCompile,
+  classifyRun,
+  describeExitCode,
+  getCompileOutput,
+  getInfrastructureFailure,
+  type ContainerRunner,
+} from "./compiled-program.js";
 
-  const cppFile = path.join(tempDir, "main.cpp");
-  const inputFile = path.join(tempDir, "input.txt");
+export type CppExecutionLimits = ExecutionLimits;
 
-  await fs.writeFile(cppFile, code);
-  await fs.writeFile(inputFile, input);
+export const DEFAULT_CPP_LIMITS: CppExecutionLimits = DEFAULT_EXECUTION_LIMITS;
 
-  console.log("📁 Temp Directory:", tempDir);
-  console.log("📄 Input:", JSON.stringify(input));
+export type CppSandboxes = StageSandboxes;
 
-  const dockerCommand = `docker run --rm \
---memory=128m \
---cpus=1 \
---network=none \
--v "${tempDir}:/workspace" \
--w /workspace \
-gcc:14 \
-bash -c "g++ main.cpp -o main && ./main < input.txt"`;
+// g++ needs more memory than most programs; swap is disabled, so the limits are exact.
+export const DEFAULT_CPP_SANDBOXES: CppSandboxes = {
+  compile: configuredSandbox(sandboxConfig.compileMemoryMb),
+  run: configuredSandbox(sandboxConfig.runMemoryMb),
+};
 
-  console.log(dockerCommand);
+export interface ExecuteCppOptions {
+  runner?: ContainerRunner;
+  limits?: CppExecutionLimits;
+  sandboxes?: CppSandboxes;
+}
 
-  try {
-    const { stdout, stderr } = await executeCommand(dockerCommand);
+// Fixed commands: submitted code and stdin only reach the container as files in the mounted workspace.
+export const COMPILE_COMMAND = ["g++", "main.cpp", "-o", "main"] as const;
+export const RUN_COMMAND = ["bash", "-c", "./main < input.txt"] as const;
 
-    return {
-      stdout: stdout.trim(),
-      stderr: stderr.trim(),
-    };
-  } catch (error: any) {
+const CPP: CompiledLanguage = { sourceFile: "main.cpp", compileCommand: COMPILE_COMMAND, runCommand: RUN_COMMAND };
 
-    if (error.killed || error.signal === "SIGTERM") {
-      return {
-        stdout: "",
-        stderr: "Execution Timed Out",
-      };
-    }
-
-    return {
-      stdout: "",
-      stderr: (error.stderr || error.message).trim(),
-    };
-  } finally {
-    await fs.rm(tempDir, {
-      recursive: true,
-      force: true,
-    });
-  }
+export function executeCpp(code: string, input: string, options: ExecuteCppOptions = {}): Promise<ExecutionResult> {
+  const { sandboxes = DEFAULT_CPP_SANDBOXES, ...rest } = options;
+  return executeCompiledProgram(CPP, code, input, { ...rest, sandboxes });
 }
